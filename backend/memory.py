@@ -34,3 +34,18 @@ class SlidingWindowMemory:
                 f"Guide: {item['assistant']}"
             )
         return "\n\n".join(formatted)
+
+    def summary_text(self) -> str:
+        items = self.history()
+        if not items:
+            return "No recent practice history."
+
+        recent_users = [item["user"] for item in items[-2:]]
+        recent_guides = [item["assistant"] for item in items[-2:]]
+        last_user = recent_users[-1] if recent_users else "None"
+        last_guide = recent_guides[-1] if recent_guides else "None"
+        return (
+            f"Recent practice count: {len(items)}.\n"
+            f"Latest user focus: {last_user}\n"
+            f"Latest guide move: {last_guide}"
+        )

@@ -4,3 +4,6 @@ streamlit>=1.40.0
 requests>=2.32.0
 langsmith>=0.1.125
 pydantic>=2.9.0
+faiss-cpu>=1.8.0
+sentence-transformers>=3.0.0
+numpy>=1.26.4,<2.0

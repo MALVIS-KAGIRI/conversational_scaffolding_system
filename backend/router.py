@@ -10,7 +10,8 @@ from pydantic import BaseModel, Field
 from .intent import classify_intent
 from .memory import SlidingWindowMemory
 from .model import ModelClient, ModelResult
-from .rules import RuleResult, apply_rules
+from .retrieval import FaissKnowledgeBase, format_retrieved_context
+from .rules import RuleResult, apply_rules, response_is_valid
 
 try:
     from langsmith import traceable
@@ -26,6 +27,13 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 memory_store = SlidingWindowMemory(max_items=5)
 model_client = ModelClient()
+knowledge_base = FaissKnowledgeBase()
+RETRIEVAL_ENABLED = knowledge_base.startup_check()
+
+if RETRIEVAL_ENABLED:
+    logger.info("FAISS retrieval enabled for this server run.")
+else:
+    logger.info("FAISS retrieval disabled for this server run: %s", knowledge_base.disabled_reason)
 
 
 class ChatRequest(BaseModel):
@@ -55,7 +63,15 @@ def traced_apply_rules(user_input: str, intent: str) -> RuleResult:
 
 @traceable(name="build_prompt", run_type="prompt")
 def build_prompt(user_input: str, memory: SlidingWindowMemory, rule_result: RuleResult) -> str:
-    history = memory.as_text()
+    history = memory.summary_text()
+    retrieved_context = "Retrieval unavailable for this server run."
+    if RETRIEVAL_ENABLED:
+        retrieved = knowledge_base.retrieve(
+            query=user_input,
+            scenario=rule_result.scenario,
+            intent=rule_result.intent,
+        )
+        retrieved_context = format_retrieved_context(retrieved)
     return f"""
 You are a conversational guide helping users practice social interaction.
 
@@ -66,22 +82,30 @@ System rules:
 - Guide interaction step-by-step.
 - Do not act like a general chatbot.
 - Stay within social interaction support.
-- Use this response format:
-  1. Acknowledge the user.
-  2. Provide one practical guidance step.
-  3. Ask one follow-up question.
+- Keep the whole response to 2 or 3 short sentences.
+- Do not add lists, headings, or extra explanations.
+
+Required response structure:
+Sentence 1: acknowledge the user or their situation.
+Sentence 2: give exactly one practical coaching step.
+Sentence 3: ask exactly one follow-up question.
 
 Conversation history:
 {history}
 
+Relevant coaching context:
+{retrieved_context}
+
 Detected intent: {rule_result.intent}
+Detected scenario: {rule_result.scenario}
 Rule guidance: {rule_result.guidance}
+Required coaching step: {rule_result.coaching_step}
 Required follow-up: {rule_result.follow_up}
 
 User input:
 {user_input}
 
-Guide response:
+Write only the guide response:
 """.strip()
 
 
@@ -113,6 +137,30 @@ def _safe_fallback_response(rule_result: RuleResult, user_input: str) -> str:
         if user_input.strip()
         else "Please share one short situation you want to practice. What would you like to rehearse?"
     )
+
+
+def _repair_prompt(
+    original_prompt: str,
+    invalid_response: str,
+    rule_result: RuleResult,
+) -> str:
+    return f"""
+{original_prompt}
+
+The previous response did not follow the required format closely enough.
+
+Previous response:
+{invalid_response}
+
+Repair instructions:
+- Keep the answer under 70 words.
+- Use exactly 3 short sentences.
+- Include exactly one follow-up question.
+- Keep the coaching step aligned to: {rule_result.coaching_step}
+- End with a question closely matching: {rule_result.follow_up}
+
+Write only the repaired guide response:
+""".strip()
 
 
 @traceable(name="social_interaction_pipeline", run_type="chain")
@@ -148,6 +196,14 @@ def run_pipeline(user_input: str) -> ChatResponse:
     try:
         model_result = call_model(prompt)
         response_text = model_result.text or _safe_fallback_response(rule_result, user_input)
+        if not response_is_valid(response_text, rule_result):
+            repair_result = call_model(_repair_prompt(prompt, response_text, rule_result))
+            repaired_text = repair_result.text.strip()
+            if response_is_valid(repaired_text, rule_result):
+                model_result = repair_result
+                response_text = repaired_text
+            else:
+                response_text = _safe_fallback_response(rule_result, user_input)
     except Exception as exc:  # pragma: no cover
         logger.exception("Model call failed")
         response_text = _safe_fallback_response(rule_result, user_input)

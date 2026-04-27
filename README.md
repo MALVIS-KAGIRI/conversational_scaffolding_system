@@ -443,6 +443,150 @@ Possible future enhancements include:
 - Conversation scoring for training and assessment workflows
 - Authentication and multi-user session support
 
+## Smaller Model Optimization Notes
+
+The backend now includes several changes that help a smaller model behave more like a larger one for this narrow use case:
+
+- Scenario detection before prompt construction
+- Compact memory summaries instead of longer raw history injection
+- Explicit three-sentence response scaffolding
+- One silent repair attempt when the model misses the expected structure
+
+These changes improve consistency for smaller local models such as `Qwen2.5-3B-Instruct` without changing the high-level architecture.
+
+### What Is Already Handled In Code
+
+- The rule layer identifies a likely practice scenario
+- The prompt asks the model for one short acknowledgement, one coaching step, and one follow-up question
+- The response is checked for brevity and structure
+- If the first answer drifts, the backend asks for one repaired response before falling back
+
+### What Still Needs To Be Done Manually
+
+To push a 3B model closer to 7B quality for this project, the next steps are mostly data and evaluation work:
+
+1. Build a small supervised fine-tuning dataset
+   - 500 to 2,000 examples is a good starting range
+   - Include greetings, emotional expression, general interaction, and safe refusals
+   - Keep the outputs short and in the exact three-part format used by the app
+
+2. Add preference pairs for weak cases
+   - Create `chosen` and `rejected` response pairs for vague, overly long, or off-domain outputs
+   - Use these later for DPO if SFT alone is not enough
+
+3. Create a fixed evaluation set
+   - 50 to 100 representative prompts
+   - Score format compliance, brevity, in-domain behavior, and safety
+
+4. Track failures from real sessions
+   - Export LangSmith traces
+   - Collect examples where the model missed the follow-up question, got too generic, or drifted out of scope
+   - Rewrite those into ideal outputs and add them to the training set
+
+5. Fine-tune with LoRA instead of full training
+   - Prefer `Qwen/Qwen2.5-3B-Instruct`
+   - Use SFT first
+   - Add DPO only if you still need better style alignment after SFT
+
+## FAISS Retrieval Layer
+
+The project now includes a lightweight FAISS-based retrieval path for curated coaching knowledge.
+This is intended to improve smaller models by giving them short, relevant social-support snippets
+before generation.
+
+### Retrieval Design
+
+The retrieval layer stores compact knowledge documents with this schema:
+
+```json
+{
+  "id": "group_01",
+  "type": "coaching_snippet",
+  "scenario": "joining_group",
+  "intent": "general_interaction",
+  "skill": "follow_ups",
+  "content": "To join a group conversation, start with a short comment tied to the current topic, then ask one light follow-up question.",
+  "source": "curated_internal",
+  "tags": ["group", "follow-up"]
+}
+```
+
+These documents are embedded and indexed in FAISS. At runtime, the backend:
+
+1. Detects intent and scenario
+2. Queries FAISS with the user input
+3. Filters the results by scenario and intent
+4. Injects the top retrieved coaching snippets into the prompt
+
+### Files Added
+
+- `data/knowledge_base.jsonl` - curated coaching knowledge source
+- `backend/retrieval.py` - FAISS loader and retrieval utilities
+- `scripts/build_faiss_index.py` - index builder script
+- `scripts/ingest_to_faiss.py` - automation for importing downloaded files and rebuilding the index
+
+### Build The FAISS Index
+
+After installing dependencies, build the local index:
+
+```bash
+python scripts/build_faiss_index.py
+```
+
+This creates:
+
+- `data/faiss/coaching.index`
+- `data/faiss/coaching_metadata.json`
+
+### Retrieval Environment Variables
+
+Optional settings:
+
+```env
+FAISS_INDEX_PATH=
+FAISS_METADATA_PATH=
+EMBEDDING_MODEL_NAME=sentence-transformers/all-MiniLM-L6-v2
+RETRIEVAL_TOP_K=3
+```
+
+If the FAISS index is missing, the backend simply skips retrieval and continues with the existing rule-guided flow.
+
+### Import Downloaded Files Automatically
+
+If you download relevant source files yourself, you can ingest them into the knowledge base and optionally rebuild FAISS in one step.
+
+Supported formats:
+
+- `.txt`
+- `.md`
+- `.json`
+- `.jsonl`
+- `.csv`
+
+Example:
+
+```bash
+python scripts/ingest_to_faiss.py ^
+  C:\Users\USER\Downloads\social-support-data ^
+  --source downloaded_social_data ^
+  --scenario social_anxiety_support ^
+  --intent emotional_expression ^
+  --skill confidence ^
+  --tags empathy,support ^
+  --replace-source ^
+  --rebuild
+```
+
+What this does:
+
+1. Finds supported files in the given folder
+2. Extracts text content from each file
+3. Chunks the text into smaller coaching documents
+4. Writes them into `data/knowledge_base.jsonl`
+5. Rebuilds the FAISS index if `--rebuild` is provided
+
+This makes it easier to refresh your vector store whenever you download better source material.
+
 ## Conclusion
 
 This project demonstrates how to combine symbolic control and LLM generation in a practical full-stack AI application.
