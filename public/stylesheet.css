@@ -1,0 +1,51 @@
+body {
+  background:
+    radial-gradient(circle at top left, rgba(101, 174, 153, 0.16), transparent 28%),
+    radial-gradient(circle at top right, rgba(242, 168, 128, 0.14), transparent 24%),
+    linear-gradient(180deg, #f7f2ea 0%, #fcf8f2 100%);
+}
+
+.cl-app {
+  color: hsl(var(--foreground));
+}
+
+.cl-navbar,
+.cl-header,
+.MuiDrawer-paper {
+  backdrop-filter: blur(12px);
+}
+
+.MuiPaper-root,
+.MuiCard-root,
+.MuiDialog-paper,
+.MuiAccordion-root {
+  border-radius: 18px !important;
+  border: 1px solid hsla(181, 17%, 34%, 0.12) !important;
+  box-shadow: 0 12px 35px rgba(32, 54, 55, 0.08) !important;
+}
+
+.MuiButton-containedPrimary,
+.MuiButton-contained {
+  border-radius: 14px !important;
+  text-transform: none !important;
+  font-weight: 700 !important;
+}
+
+.MuiInputBase-root,
+.MuiOutlinedInput-root {
+  border-radius: 14px !important;
+}
+
+.MuiTypography-root,
+.MuiFormLabel-root,
+.MuiInputBase-input,
+.MuiFormControlLabel-label,
+.MuiSlider-markLabel {
+  color: hsl(var(--foreground)) !important;
+  opacity: 1 !important;
+}
+
+code,
+pre {
+  border-radius: 14px !important;
+}

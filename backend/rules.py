@@ -38,13 +38,37 @@ SCENARIO_KEYWORDS = {
     "conversation_exit": {"leave", "end conversation", "goodbye", "wrap up", "exit"},
 }
 
+SCENARIO_ALIASES = {
+    "lunch_group": "joining_group",
+    "join a lunch conversation": "joining_group",
+    "meet_someone_new": "greeting_practice",
+    "meet someone new": "greeting_practice",
+    "group_confidence": "social_anxiety_support",
+    "speak in a group setting": "social_anxiety_support",
+    "awkward_silence": "small_talk_flow",
+    "recover from awkward silence": "small_talk_flow",
+    "end_conversation": "conversation_exit",
+    "end a conversation smoothly": "conversation_exit",
+}
+
 
 def _contains_unsafe_content(text: str) -> bool:
     lowered = text.lower()
     return any(keyword in lowered for keyword in UNSAFE_OR_OUT_OF_SCOPE_KEYWORDS)
 
 
-def detect_scenario(user_input: str, intent: str) -> str:
+def normalize_scenario_name(value: str | None) -> str | None:
+    if not value:
+        return None
+    lowered = value.strip().lower()
+    return SCENARIO_ALIASES.get(lowered, lowered if lowered in SCENARIO_KEYWORDS else None)
+
+
+def detect_scenario(user_input: str, intent: str, preferred_scenario: str | None = None) -> str:
+    normalized_preference = normalize_scenario_name(preferred_scenario)
+    if normalized_preference:
+        return normalized_preference
+
     lowered = user_input.lower()
 
     for scenario, keywords in SCENARIO_KEYWORDS.items():
@@ -93,10 +117,27 @@ def response_is_valid(text: str, rule_result: RuleResult) -> bool:
     return True
 
 
-def apply_rules(user_input: str, intent: str) -> RuleResult:
+def _follow_up_for(scenario: str) -> str:
+    follow_ups = {
+        "greeting_practice": "What opening line would you like to practice first?",
+        "joining_group": "What topic should we pretend the group is already discussing?",
+        "social_anxiety_support": "What part of that interaction feels hardest right now?",
+        "small_talk_flow": "What detail could you build on with one short follow-up question?",
+        "conversation_exit": "What polite closing line would you like to practice?",
+    }
+    return follow_ups.get(scenario, "What specific interaction would you like to practice next?")
+
+
+def apply_rules(
+    user_input: str,
+    intent: str,
+    preferred_scenario: str | None = None,
+    session_started: bool = False,
+) -> RuleResult:
     cleaned = user_input.strip()
-    scenario = detect_scenario(cleaned, intent)
+    scenario = detect_scenario(cleaned, intent, preferred_scenario=preferred_scenario)
     coaching_step = _coaching_step_for(scenario)
+    scenario_follow_up = _follow_up_for(scenario)
 
     if not cleaned:
         return RuleResult(
@@ -131,7 +172,7 @@ def apply_rules(user_input: str, intent: str) -> RuleResult:
             reason="out_of_scope",
         )
 
-    if intent == "greeting":
+    if intent == "greeting" and not session_started:
         return RuleResult(
             intent=intent,
             blocked=True,
@@ -146,6 +187,20 @@ def apply_rules(user_input: str, intent: str) -> RuleResult:
             coaching_step=coaching_step,
         )
 
+    if intent == "greeting" and session_started:
+        return RuleResult(
+            intent="general_interaction",
+            blocked=False,
+            response=None,
+            guidance=(
+                "Stay inside the active scenario, respond naturally, and move the practice "
+                "forward instead of restarting scenario selection."
+            ),
+            follow_up=scenario_follow_up,
+            scenario=scenario,
+            coaching_step=coaching_step,
+        )
+
     if intent == "emotional_expression":
         return RuleResult(
             intent=intent,
@@ -155,7 +210,7 @@ def apply_rules(user_input: str, intent: str) -> RuleResult:
                 "Acknowledge the feeling, give one simple social coaching step, and ask for "
                 "a concrete practice scenario."
             ),
-            follow_up="What social moment feels hardest right now?",
+            follow_up=scenario_follow_up,
             scenario=scenario,
             coaching_step=coaching_step,
         )
@@ -168,7 +223,7 @@ def apply_rules(user_input: str, intent: str) -> RuleResult:
             "Keep the user focused on practicing a specific social interaction with one step "
             "at a time."
         ),
-        follow_up="What specific interaction would you like to practice next?",
+        follow_up=scenario_follow_up,
         scenario=scenario,
         coaching_step=coaching_step,
     )

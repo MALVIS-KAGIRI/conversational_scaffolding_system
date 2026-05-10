@@ -1,315 +1,385 @@
-# Rule-Guided Conversational System for Social Interaction Support
+# Social Interaction Support Guide
+
+A full-stack AI coaching system for structured social interaction practice.
+Not a general-purpose chatbot — every interaction is rule-guided, focused, and safely bounded to social skills training.
+
+---
 
 ## Project Summary
 
-This project is a full-stack AI system designed to support structured social interaction practice.
-It is intentionally not a general-purpose chatbot. Instead, it uses a rule-guided pipeline to keep
-every interaction focused, supportive, brief, and safely within the domain of social interaction support.
+This system helps users build social confidence through guided, repeatable practice sessions. A rule engine shapes every interaction before the LLM is called, keeping responses short, structured, and on-topic. A Streamlit frontend provides a rich multi-page coaching workspace with analytics, session history, and progressive skill unlocks.
 
-The system combines:
+The stack combines:
 
-- A FastAPI backend for orchestration and model access
-- A Streamlit frontend for the user interface
-- Rule-based intent classification and response control
-- A single large language model for guided response generation
-- Short-term memory for conversational context
-- LangSmith tracing for observability and debugging
+- **FastAPI backend** — orchestration, rule enforcement, model access
+- **Streamlit frontend** — multi-page coaching UI with insights and session management
+- **Groq API** (primary LLM) — `llama-3.1-8b-instant`, fast and free-tier friendly
+- **llama.cpp local server** — offline/rate-limit fallback
+- **Hugging Face Inference API** — last-resort fallback
+- **FAISS retrieval** — optional curated coaching snippets injected into prompts
+- **Langfuse tracing** — full OTEL-based observability across the pipeline
+
+---
 
 ## Project Purpose
 
-The goal of this project is to help users practice and reflect on social interactions in a structured way.
-Rather than allowing unrestricted conversation, the system guides users through manageable conversational steps.
-This makes the behavior more controllable, safer, easier to evaluate, and more suitable for use cases where
-structured support matters more than open-ended chat.
+The goal is to give users a low-stakes environment to rehearse social situations — joining a group conversation, greeting someone new, recovering from an awkward silence — with a structured AI coach that advances the session rather than repeating generic questions.
 
-The system is built to demonstrate:
+The system demonstrates:
 
-- Rule-guided interaction instead of free-form conversation
+- Rule-guided interaction with phase-aware conversation advancement
 - Intent-aware response shaping
-- Context awareness with limited memory
-- Controlled use of a single LLM
-- Observable execution through LangSmith traces
+- Short-term memory with proper dialogue formatting
+- Controlled LLM use with a repair-and-fallback loop
+- Full observability via Langfuse traces, spans, and generation metadata
 
-## Core Objective
-
-The application is designed to:
-
-- Guide users through structured interaction
-- Use rule-based logic to control responses
-- Use one LLM for generation
-- Maintain short-term memory
-- Classify user intent
-- Track interactions and debugging signals with LangSmith
+---
 
 ## System Architecture
 
-The backend follows this processing pipeline:
-
-`User Input -> Intent Classification -> Rule-Based Layer -> Prompt Builder -> LLM -> Memory Update -> Response`
+```
+User Input
+    │
+    ▼
+Intent Classification (keyword-based)
+    │
+    ▼
+Rule-Based Layer (block / redirect / shape)
+    │         │
+    │     [blocked] ──► Safe Response
+    │
+    ▼
+Prompt Builder (phase-aware, history-formatted)
+    │
+    ▼
+LLM Generation (Groq → llama.cpp → HuggingFace)
+    │
+    ▼
+Response Validator ──[invalid]──► Repair Attempt ──[still invalid]──► Fallback
+    │
+    ▼
+Memory Update (sliding window, 5 turns)
+    │
+    ▼
+Response → Frontend
+```
 
 ### Pipeline Stages
 
-1. `User Input`
-   The user submits a message from the Streamlit interface.
+1. **Intent Classification** — classifies input as `greeting`, `emotional_expression`, or `general_interaction` using keyword matching.
 
-2. `Intent Classification`
-   The system uses keyword-based logic to classify the input as one of:
-   - `greeting`
-   - `emotional_expression`
-   - `general_interaction`
+2. **Rule-Based Layer** — applies strict pre-LLM rules to block unsafe requests, redirect greetings to structured practice prompts, and supply scenario-specific guidance for the prompt builder.
 
-3. `Rule-Based Layer`
-   The system applies strict rules to:
-   - Override simple greetings with a structured practice prompt
-   - Enforce a guided response format
-   - Block unsafe or out-of-scope requests
+3. **Prompt Builder** — constructs a phase-aware prompt. The phase changes based on turn count:
+   - Turn 0: Set up scenario, ask one context question
+   - Turn 1: Acknowledge answer, begin active roleplay
+   - Turns 2–3: Mid-session coaching, no setup repetition
+   - Turn 4+: Introduce complications to deepen practice
 
-4. `Prompt Builder`
-   The system constructs a prompt that includes:
-   - The assistant role
-   - Behavioral rules
-   - Recent conversation history
-   - Intent-specific guidance
+4. **LLM Generation** — calls Groq first, falls back to llama.cpp on network failure or rate limiting (HTTP 429/403/503/529), then to Hugging Face as a last resort.
 
-5. `LLM Generation`
-   A single causal language model generates the response.
+5. **Response Validation & Repair** — validates the response for brevity, structure, and required follow-up question. If invalid, one silent repair attempt is made before using a safe fallback.
 
-6. `Memory Update`
-   The latest interaction is stored in short-term memory using a sliding window.
+6. **Memory Update** — stores the exchange in a 5-turn sliding window, formatted as `[Turn N] User: / [Turn N] Coach:` for proper dialogue injection.
 
-7. `Response`
-   The final output is returned to the frontend and shown to the user.
+7. **Response** — returned to the Streamlit frontend with metadata: provider, latency, token usage, intent, and rule reason.
 
-## Key Features
+---
 
-- FastAPI backend with `/chat` and `/health`
-- Streamlit chat interface
-- Keyword-based intent classification
-- Rule-guided conversational scaffolding
-- Short-term memory limited to the last 5 interactions
-- llama.cpp local inference support
-- Hugging Face Inference API fallback
-- LangSmith tracing decorators across the pipeline
-- Safety constraints for out-of-scope requests
-- Lightweight design for low-VRAM environments such as GTX 1650
+## Backend
 
-## Project Structure
+### Files
 
-```text
+```
 backend/
-  main.py
-  router.py
-  memory.py
-  rules.py
-  intent.py
-  model.py
-
-frontend/
-  app.py
-
-tests/
-  test_pipeline.py
-
-requirements.txt
-.env.example
-README.md
+  main.py        FastAPI app, CORS, health endpoint
+  router.py      Pipeline, all endpoints, Langfuse tracing
+  tracing.py     Langfuse SDK v3 initialisation and no-op shims
+  intent.py      Keyword-based intent classifier
+  rules.py       Rule engine, scenario detection, safety blocking
+  memory.py      SlidingWindowMemory (5-turn window)
+  model.py       ModelClient: Groq → llama.cpp → HuggingFace
+  retrieval.py   FAISS knowledge base loader and retrieval
 ```
 
-## Backend Overview
-
-### `backend/main.py`
-
-Creates the FastAPI application, configures logging, and exposes the health endpoint.
-
-### `backend/router.py`
-
-Contains the main interaction pipeline and the `POST /chat` endpoint. It is responsible for:
-
-- Request validation
-- Running the structured pipeline
-- Calling the model
-- Updating memory
-- Returning metadata such as latency, provider, and token usage
-
-### `backend/intent.py`
-
-Implements keyword-based intent classification with the following labels:
-
-- `greeting`
-- `emotional_expression`
-- `general_interaction`
-
-### `backend/rules.py`
-
-Defines the rule engine that controls the interaction behavior. It:
-
-- Overrides greetings with structured prompts
-- Blocks empty inputs
-- Rejects unsafe or out-of-scope requests
-- Supplies guidance and follow-up instructions for prompt construction
-
-### `backend/memory.py`
-
-Implements a sliding-window short-term memory module that stores the last five user-guide exchanges.
-
-### `backend/model.py`
-
-Implements model access with two inference modes:
-
-1. Local `llama.cpp` server
-2. Hugging Face Inference API fallback
-
-The default model target is:
-
-- `Qwen/Qwen2.5-7B-Instruct`
-
-Generation settings:
-
-- `temperature = 0.6`
-- `top_p = 0.9`
-- `max_tokens = 120`
-
-## Frontend Overview
-
-### `frontend/app.py`
-
-The frontend is built with Streamlit and provides:
-
-- A chat-style interface
-- Message history display
-- User input box
-- Request handling to the backend
-- Friendly error handling when the backend is unavailable
-
-## Prompt Design
-
-Each generated prompt enforces the following assistant identity:
-
-`You are a conversational guide helping users practice social interaction.`
-
-The prompt also enforces these behavioral rules:
-
-- Be supportive
-- Keep responses short
-- Ask a follow-up question
-- Guide interaction step-by-step
-- Stay within the social interaction support domain
-- Avoid behaving like a general chatbot
-
-The prompt includes recent conversation history from the short-term memory store to support contextual continuity.
-
-## Rule-Guided Behavior
-
-This system is intentionally controlled by rules before the LLM is called.
-
-### Structured Response Requirements
-
-Responses are guided toward this format:
-
-1. Acknowledge the user
-2. Provide one practical guidance step
-3. Ask one follow-up question
-
-### Greeting Handling
-
-Simple greetings are not treated as open-ended conversation starters. Instead, they are redirected into a structured practice flow.
-
-### Out-of-Scope and Unsafe Requests
-
-The system rejects requests outside its scope, such as:
-
-- Medical advice
-- Legal advice
-- Crisis support
-- Harmful or self-harm related instructions
-
-When such requests are detected, the system responds with a safe refusal and redirects toward an appropriate social-support practice alternative when possible.
-
-## Memory Design
-
-The application uses short-term memory only.
-
-- Stores the last 5 interactions
-- Uses a sliding window
-- Injects recent interaction history into the prompt
-- Keeps context small for faster responses and lower memory usage
-
-This design supports lightweight deployment and predictable prompt size.
-
-## LangSmith Integration
-
-LangSmith is used for tracing and debugging the pipeline.
-
-The project supports:
-
-- Tracking user input, intent, and response flow
-- Logging latency
-- Logging token usage
-- Capturing traces for prompt creation, model calls, and memory updates
-
-### Environment Variables
-
-Set the following variables to enable tracing:
-
-- `LANGCHAIN_API_KEY`
-- `LANGCHAIN_PROJECT`
-
-Tracing is applied through decorators around core functions in the backend pipeline.
-
-## Performance Considerations
-
-This project is optimized for constrained hardware.
-
-### Low-VRAM Support
-
-To work better on systems like a GTX 1650:
-
-- Limit prompt memory to 5 interactions
-- Keep generation capped at 120 tokens
-- Use short structured responses
-- Prefer quantized local models for llama.cpp
-
-### Recommended Local Model Setup
-
-Use a quantized Qwen 2.5 7B Instruct GGUF build such as `Q4_K_M` when running locally with llama.cpp.
-
-The backend now supports two local modes:
-
-1. Connect to an already running `llama.cpp` server through `LLAMA_CPP_URL`
-2. Start `llama.cpp` automatically from your downloaded GGUF model using:
-   - `LLAMA_CPP_SERVER_PATH`
-   - `LLAMA_CPP_MODEL_PATH`
-
-Example managed local configuration:
-
-```env
-LLAMA_CPP_URL=http://127.0.0.1:8080
-LLAMA_CPP_SERVER_PATH=C:\llama.cpp\build\bin\Release\llama-server.exe
-LLAMA_CPP_MODEL_PATH=C:\models\Qwen2.5-7B-Instruct-Q4_K_M.gguf
-LLAMA_CPP_CONTEXT_SIZE=2048
-LLAMA_CPP_GPU_LAYERS=20
-LLAMA_CPP_STARTUP_TIMEOUT=45
+### `main.py`
+
+Creates the FastAPI app, loads `.env`, configures logging, registers the router, and exposes `/health`. The health endpoint reports which inference backends are configured:
+
+```json
+{
+  "status": "ok",
+  "groq_configured": "true",
+  "llama_cpp_url_configured": "false",
+  "llama_cpp_managed_configured": "false",
+  "huggingface_configured": "false"
+}
 ```
 
-If you prefer to run the server yourself, this is the equivalent command:
+### `router.py`
 
-```bash
-./server -m ./Qwen2.5-7B-Instruct.gguf -c 2048 -ngl 20 --host 127.0.0.1 --port 8080
+Contains all three API endpoints and the full pipeline logic. Every function is traced with Langfuse `@observe` decorators. Key responsibilities:
+
+- `run_pipeline` — root trace for `/chat`, enriches trace with user/session context
+- `call_model` — annotated as a Langfuse `generation` with token usage and model metadata
+- `build_prompt` — phase-aware prompt construction with history formatted as a dialogue
+- `traced_classify_intent` / `traced_apply_rules` — individually observed child spans
+- Response repair wrapped in its own named child span for visibility in Langfuse
+
+### `tracing.py`
+
+Initialises the Langfuse SDK v3 client once at import time using `get_client()`. Provides no-op shims for `langfuse`, `observe`, and `propagate_attributes` so the app starts cleanly without Langfuse credentials — every traced function silently becomes a pass-through.
+
+### `intent.py`
+
+Keyword-based intent classifier returning one of:
+
+| Intent | Trigger keywords |
+|---|---|
+| `greeting` | hello, hi, hey, good morning, good afternoon, good evening |
+| `emotional_expression` | nervous, anxious, worried, sad, upset, lonely, awkward, scared, frustrated, embarrassed |
+| `general_interaction` | everything else |
+
+### `rules.py`
+
+Pre-LLM rule engine with full scenario detection and safety blocking. Responsibilities:
+
+- **Empty input** — blocked with a prompt to share a practice situation
+- **Unsafe content** — blocked on keywords such as `suicide`, `medical advice`, `legal advice`, `self-harm`; returns a safe refusal
+- **Greeting intent** — redirected to a structured practice prompt
+- **Scenario detection** — maps user input and frontend selection to one of five internal scenarios: `greeting_practice`, `joining_group`, `social_anxiety_support`, `small_talk_flow`, `conversation_exit`
+- Supplies `coaching_step` and `follow_up` strings for the prompt builder
+
+### `memory.py`
+
+`SlidingWindowMemory` stores up to 5 user-assistant exchanges in a thread-safe deque. The router reads history via `.history()` which returns structured `{user, assistant}` dicts, then formats them into a labelled dialogue (`[Turn N] User: / [Turn N] Coach:`) before prompt injection.
+
+### `model.py`
+
+`ModelClient` implements a three-tier provider chain:
+
+**1. Groq (primary)**
+- Model: `llama-3.1-8b-instant` (configurable via `GROQ_MODEL_ID`)
+- Endpoint: `https://api.groq.com/openai/v1/chat/completions`
+- Falls back on: HTTP 429 (rate limit), 403 (Cloudflare block), 503/529 (overload), or any `OSError`/`TimeoutError` (no internet)
+- Uses `User-Agent: python-groq-client/1.0` to pass Cloudflare bot checks
+
+**2. llama.cpp local (fallback)**
+- Connects to an already-running server via `LLAMA_CPP_URL`, or auto-starts one using `LLAMA_CPP_SERVER_PATH` + `LLAMA_CPP_MODEL_PATH`
+- Auto-start uses `atexit` to cleanly terminate the process on shutdown
+
+**3. Hugging Face Inference API (last resort)**
+- Only used if `HF_API_TOKEN` is set and both Groq and llama.cpp are unavailable
+
+### `retrieval.py`
+
+Optional FAISS-based retrieval layer. At startup, `FaissKnowledgeBase.startup_check()` checks whether the index and metadata files exist and whether `faiss-cpu` and `sentence-transformers` are installed. If either condition fails, retrieval is silently disabled and the pipeline continues without it.
+
+When enabled, the retrieval step:
+1. Embeds the user input using `sentence-transformers/all-MiniLM-L6-v2`
+2. Queries the FAISS index
+3. Filters results by scenario and intent
+4. Injects the top-K coaching snippets into the prompt
+
+---
+
+## API Endpoints
+
+### `POST /chat`
+
+Main interaction endpoint.
+
+Request:
+```json
+{
+  "user_input": "I feel nervous joining conversations at work",
+  "selected_scenario": "lunch_group",
+  "goal_text": "Ask one natural follow-up question",
+  "coach_style": "Supportive",
+  "session_id": "optional-session-uuid",
+  "user_id": "optional-user-id"
+}
 ```
 
-## Installation
-
-### 1. Install Dependencies
-
-```bash
-pip install -r requirements.txt
+Response:
+```json
+{
+  "response": "It sounds like joining mid-conversation feels daunting...",
+  "intent": "emotional_expression",
+  "memory": [...],
+  "latency_ms": 423.5,
+  "token_usage": {"prompt_tokens": 210, "completion_tokens": 58, "total_tokens": 268},
+  "provider": "groq",
+  "blocked": false,
+  "rule_reason": null
+}
 ```
 
-### 2. Configure Environment
+### `POST /debrief`
 
-Copy `.env.example` to `.env` and set the values you need.
+Generates a structured post-session AI debrief from the full conversation transcript.
 
-Example variables:
+Request:
+```json
+{
+  "messages": [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}],
+  "scenario_title": "Join a Lunch Conversation",
+  "scenario_skill": "follow_ups",
+  "goal_text": "Ask one natural follow-up question",
+  "coach_style": "Supportive",
+  "confidence_before": 2,
+  "confidence_after": 4,
+  "session_id": "optional",
+  "user_id": "optional"
+}
+```
+
+Response:
+```json
+{
+  "went_well": "You picked up on the food topic naturally and built on it.",
+  "improve": "Try to ask about the other person rather than describing your own experience.",
+  "micro_tip": "Use the 'echo and ask' technique: repeat one word they said, then ask about it.",
+  "encouragement": "Your confidence jumped two points today — that progress is real.",
+  "provider": "groq",
+  "latency_ms": 891.2
+}
+```
+
+### `POST /warmup`
+
+Returns 3 suggested opening messages tailored to the selected scenario and skill.
+
+Request:
+```json
+{
+  "scenario_id": "lunch_group",
+  "scenario_title": "Join a Lunch Conversation",
+  "scenario_skill": "follow_ups",
+  "goal_text": "Ask one natural follow-up question",
+  "coach_style": "Supportive",
+  "session_id": "optional",
+  "user_id": "optional"
+}
+```
+
+Response:
+```json
+{
+  "starters": [
+    "I want to join a lunch table where people are already mid-conversation.",
+    "People are talking about a topic I know a little about. How do I step in?",
+    "I sat down next to a group but haven't said anything yet."
+  ],
+  "provider": "groq",
+  "latency_ms": 312.0
+}
+```
+
+### `GET /health`
+
+Returns backend status and configured provider flags.
+
+---
+
+## Frontend
+
+The frontend is a Streamlit multi-page application with a themed coaching workspace.
+
+### Pages
+
+| Page | Purpose |
+|---|---|
+| **Home** | Overview dashboard, recommended session, stats, skill map, consistency heatmap |
+| **Practice** | Active coaching session with step progress, warmup starters, typing indicator, session timer, coach panel |
+| **Scenarios** | Scenario library with filtering, difficulty tags, skill unlock progression |
+| **Insights** | Analytics: KPI cards, confidence trend, skill breakdown charts, heatmap, AI coach insight |
+| **History** | Session log with confidence deltas, full transcript replay, practice-again shortcut |
+| **Profile** | Coach style (with live preview), difficulty preference, streak freeze, weekly goal |
+
+### Features
+
+**Session flow**
+- Warmup starters — 3 AI-generated opening messages fetched before the first turn, tappable to begin
+- Typing indicator — animated 3-dot bounce while the backend responds
+- Session timer — live `MM:SS` clock in the Practice sidebar
+- Contextual coach tips — rotating scenario-specific tips with a "Next tip" button
+- Step progress dots — 4-step visual indicator showing session phase
+- Confidence sliders — before/after rating captured at the end of each session
+- Post-session AI debrief — structured feedback card (what went well, to improve, micro-tip, encouragement) generated by calling `/debrief`
+- Confidence celebration — animated banner in the sidebar when confidence improves
+
+**Progress & motivation**
+- Skill unlock progression — Advanced scenarios locked until 2 Intermediate sessions are completed
+- Streak freeze — one protected off-day per week that does not break the streak
+- Weekly recap banner — shown on Mondays, summarises last week's session count, avg confidence, and top skill
+- "What do I work on?" shortcut — one-tap button on Home that starts the weakest-skill scenario
+
+**Analytics (Insights page)**
+- 4 KPI cards: total sessions, day streak, average confidence, weekly goal progress
+- Personalised AI coach insight (strongest and weakest skill callout)
+- Confidence over time line chart (last 10 sessions)
+- Skill breakdown bar chart
+- Difficulty distribution bar chart
+- 12-week practice heatmap
+
+**History**
+- Full conversation transcript saved per session
+- Expandable replay in the History page
+- Confidence before/after delta with colour coding
+
+**Empty states**
+- Illustrated SVG empty states on History and Insights when no sessions exist
+
+### Scenario Library
+
+Five practice scenarios across three difficulty levels:
+
+| Scenario | Skill | Difficulty | Unlock Requirement |
+|---|---|---|---|
+| Join a Lunch Conversation | Follow-ups | Beginner | None |
+| Meet Someone New | Greeting | Beginner | None |
+| Speak in a Group Setting | Confidence | Intermediate | None |
+| Recover From Awkward Silence | Flow | Intermediate | None |
+| End a Conversation Smoothly | Endings | Advanced | 2 Intermediate sessions |
+
+### Coach Styles
+
+Three coaching styles selectable in Profile, each with a live example preview:
+
+| Style | Approach |
+|---|---|
+| **Supportive** | Warm acknowledgement, reflective questions |
+| **Calm** | Measured, steady, one refinement at a time |
+| **Direct** | Specific, actionable, no padding |
+
+---
+
+## Observability — Langfuse
+
+The backend uses Langfuse SDK v3 (OTEL-based) for full pipeline tracing.
+
+### What is traced
+
+| Trace / Span | Type | Captures |
+|---|---|---|
+| `chat-pipeline` | Root trace | user_id, session_id, scenario tags, trace-level I/O |
+| `classify-intent` | Span | Input text, classified intent |
+| `apply-rules` | Span | Input, scenario, blocked flag, reason |
+| `build-prompt` | Span | Turn count, prompt length, retrieval status, phase |
+| `llm-generation` | **Generation** | Full prompt, response text, model, token usage, latency |
+| `response-repair` | Span | Original response, repair success/failure |
+| `update-memory` | Span | Exchange stored, memory size |
+| `debrief-pipeline` | Root trace | Scenario, skill, confidence delta, message count |
+| `warmup-pipeline` | Root trace | Scenario, skill, generated starters |
+
+### Session and user linking
+
+Pass `session_id` and `user_id` in any request body to group traces by session or user in the Langfuse UI. Both fields are optional — they default to `"default"` and `"anonymous"` respectively.
+
+### Setup
+
+Add to `.env`:
 
 ```env
 LLAMA_CPP_URL=http://127.0.0.1:8080
@@ -319,110 +389,274 @@ LLAMA_CPP_CONTEXT_SIZE=2048
 LLAMA_CPP_GPU_LAYERS=20
 LLAMA_CPP_STARTUP_TIMEOUT=45
 HF_API_TOKEN=
-HF_MODEL_ID=Qwen/Qwen2.5-7B-Instruct
+HF_MODEL_ID=
 LANGCHAIN_API_KEY=
 LANGCHAIN_PROJECT=rule-guided-social-support
 BACKEND_URL=http://127.0.0.1:8000
+FAISS_INDEX_PATH=
+FAISS_METADATA_PATH=
+EMBEDDING_MODEL_NAME=sentence-transformers/all-MiniLM-L6-v2
+RETRIEVAL_TOP_K=3
+GROQ_API_KEY=gsk...
+GROQ_MODEL_ID=llama-3.1-8b-instant
+
+OTEL_RESOURCE_ATTRIBUTES=service.name=social-ai-backend
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
+OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+OTEL_METRICS_EXPORTER=none
+
+LANGFUSE_HOST=https://cloud.langfuse.com
+LANGFUSE_SECRET_KEY=sk-lf-...
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_BASE_URL=http://localhost:3000
 ```
 
-### Running Fully Local With a Downloaded Model
+If the keys are not set, all tracing silently becomes a no-op — the application runs normally without Langfuse configured.
 
-If you already downloaded a GGUF file, set `LLAMA_CPP_SERVER_PATH` to your `llama-server` binary and
-`LLAMA_CPP_MODEL_PATH` to the GGUF file. When the first `/chat` request arrives, the backend will start
-the local `llama.cpp` server automatically and reuse it for later requests.
+---
 
-For example on Windows:
+## Installation
+
+### 1. Clone and install dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+Required packages include: `fastapi`, `uvicorn`, `pydantic`, `python-dotenv`, `streamlit`, `requests`, `langfuse`.
+
+Optional for FAISS retrieval: `faiss-cpu`, `sentence-transformers`.
+
+### 2. Configure environment
+
+Copy `.env.example` to `.env` and fill in the values you need:
 
 ```env
+# ── Primary inference (required) ─────────────────────────────────────────────
+GROQ_API_KEY=gsk_...
+GROQ_MODEL_ID=llama-3.1-8b-instant        # default, can be omitted
+
+# ── Local fallback (optional) ─────────────────────────────────────────────────
 LLAMA_CPP_URL=http://127.0.0.1:8080
-LLAMA_CPP_SERVER_PATH=C:\llama.cpp\build\bin\Release\llama-server.exe
-LLAMA_CPP_MODEL_PATH=C:\Users\USER\Models\Qwen2.5-7B-Instruct-Q4_K_M.gguf
-LLAMA_CPP_GPU_LAYERS=10
+LLAMA_CPP_SERVER_PATH=                    # path to llama-server binary (auto-start)
+LLAMA_CPP_MODEL_PATH=                     # path to .gguf model file   (auto-start)
+LLAMA_CPP_CONTEXT_SIZE=2048
+LLAMA_CPP_GPU_LAYERS=20
+LLAMA_CPP_STARTUP_TIMEOUT=45
+
+# ── HuggingFace last resort (optional) ───────────────────────────────────────
+HF_API_TOKEN=
+HF_MODEL_ID=Qwen/Qwen2.5-7B-Instruct
+
+# ── Langfuse observability (optional) ────────────────────────────────────────
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_SECRET_KEY=sk-lf-...
+LANGFUSE_HOST=https://cloud.langfuse.com
+
+# ── FAISS retrieval (optional) ────────────────────────────────────────────────
+FAISS_INDEX_PATH=
+FAISS_METADATA_PATH=
+EMBEDDING_MODEL_NAME=sentence-transformers/all-MiniLM-L6-v2
+RETRIEVAL_TOP_K=3
+
+# ── Frontend ──────────────────────────────────────────────────────────────────
+BACKEND_URL=http://127.0.0.1:8000
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+LOG_LEVEL=INFO
 ```
 
-Lower `LLAMA_CPP_GPU_LAYERS` if your GPU runs out of memory.
+### 3. Provider priority
+
+The backend selects inference providers in this order:
+
+```
+Groq (primary) → llama.cpp (offline / rate-limited) → HuggingFace (last resort)
+```
+
+Groq is always tried first. Local llama.cpp is used only when Groq is unreachable or returns a rate-limit/overload error. HuggingFace is the final fallback if neither is available.
+
+### 4. Build the FAISS index (optional)
+
+If you want retrieval-augmented prompts:
+
+```bash
+python scripts/build_faiss_index.py
+```
+
+This creates `data/faiss/coaching.index` and `data/faiss/coaching_metadata.json`. If these files are absent, the pipeline skips retrieval silently.
+
+To ingest your own source documents:
+
+```bash
+python scripts/ingest_to_faiss.py /path/to/documents \
+  --source my_source \
+  --scenario joining_group \
+  --intent general_interaction \
+  --skill follow_ups \
+  --tags group,follow-up \
+  --rebuild
+```
+
+Supported formats: `.txt`, `.md`, `.json`, `.jsonl`, `.csv`.
+
+---
 
 ## Running the Project
 
-### Start the Backend
+### Start the backend
 
 ```bash
 uvicorn backend.main:app --reload
 ```
 
-### Start the Frontend
+### Start the frontend
 
 ```bash
-streamlit run frontend/app.py
+streamlit run frontend/frontend.py
 ```
 
-### Health Check
+### Health check
 
-The backend health endpoint is available at:
-
-```text
-GET /health
+```
+GET http://127.0.0.1:8000/health
 ```
 
-## API Endpoints
+---
 
-### `POST /chat`
+## Project Structure
 
-Main interaction endpoint.
+```
+backend/
+  main.py           FastAPI app entry point
+  router.py         Pipeline logic and API endpoints
+  tracing.py        Langfuse SDK v3 initialisation and no-op shims
+  intent.py         Keyword-based intent classifier
+  rules.py          Rule engine and scenario detection
+  memory.py         Sliding-window short-term memory
+  model.py          ModelClient: Groq → llama.cpp → HuggingFace
+  retrieval.py      FAISS knowledge base loader
 
-Request body:
+frontend/
+  frontend.py       Streamlit multi-page coaching UI
 
-```json
-{
-  "user_input": "I feel nervous when meeting new people"
-}
+data/
+  knowledge_base.jsonl        Curated coaching snippets
+  faiss/
+    coaching.index            FAISS vector index (generated)
+    coaching_metadata.json    Document metadata (generated)
+
+scripts/
+  build_faiss_index.py        Builds the FAISS index from the knowledge base
+  ingest_to_faiss.py          Ingests new documents and optionally rebuilds the index
+
+.env.example
+requirements.txt
+README.md
 ```
 
-Response includes:
+---
 
-- Generated response
-- Intent label
-- Current memory window
-- Latency
-- Token usage
-- Provider used
-- Rule status metadata
+## Prompt Design
 
-### `GET /health`
+The prompt builder produces a phase-aware instruction that changes based on how many turns have already occurred, preventing the model from repeating setup questions or resetting context on every turn.
 
-Returns a simple health status response.
+**System identity:**
+
+> You are a social interaction coach running a live practice session with a user.
+
+**Core rules (injected every turn):**
+- Never repeat a question or coaching point already made this session
+- Never re-introduce scenario context that has already been established
+- Each response must move the conversation forward
+- Keep responses to 2–3 short sentences
+- No lists, headings, or meta-commentary
+- Stay inside the social interaction scenario
+
+**History format:**
+
+Conversation history is injected as a structured dialogue:
+```
+[Turn 1] User: I want to join a lunch table where people are already talking.
+[Turn 1] Coach: Great choice — let's set the scene. Who are these people?
+[Turn 2] User: My colleagues. They're talking about food.
+```
+
+This format allows the model to understand turn order and avoids the flat summary text that caused repeated questions in earlier versions.
+
+---
+
+## Rule-Guided Behavior
+
+### Safety blocking
+
+Requests containing any of these keywords are blocked and return a safe refusal:
+`diagnose`, `diagnosis`, `prescribe`, `prescription`, `medical advice`, `legal advice`, `suicide`, `self-harm`, `harm someone`, `kill`, `overdose`
+
+### Greeting handling
+
+Simple greetings are redirected into a structured practice prompt rather than treated as open-ended conversation openers.
+
+### Response validation
+
+Every generated response is checked for:
+- Non-empty text
+- At least one question mark (follow-up question required)
+- Fewer than 5 sentences
+- Fewer than 70 words
+
+If the response fails, one silent repair attempt is made. If the repair also fails, a deterministic safe fallback is used. Both outcomes are recorded as child spans in Langfuse.
+
+---
+
+## Performance Notes
+
+Optimised for constrained hardware (tested on GTX 1650, 4 GB VRAM):
+
+- Memory limited to 5 interactions to keep prompts short
+- Generation capped at 120 tokens for chat, 300 for debrief
+- Groq API eliminates local GPU load during normal operation
+- Quantized GGUF models recommended for local fallback (`Q4_K_M`)
+- Lower `LLAMA_CPP_GPU_LAYERS` if your GPU runs out of memory
+
+---
 
 ## Testing
 
-The project includes tests for:
-
-- Intent classification
-- Greeting override behavior
-- Empty input handling
-- Out-of-scope blocking
-- Sliding-window memory behavior
-- Repeated input handling
-
-Run tests with:
+Run the test suite with:
 
 ```bash
 python -m unittest discover -s tests
 ```
 
+Tests cover:
+- Intent classification
+- Greeting redirect behavior
+- Empty input blocking
+- Out-of-scope safety blocking
+- Sliding-window memory behavior
+- Repeated input handling
+
+---
+
 ## Sample Inputs
 
-Use the following examples to validate behavior:
+Use these to validate pipeline behavior end-to-end:
 
-- `Hi`
-- `I feel nervous when meeting new people`
-- `Help me practice joining a lunch conversation`
-- `I feel awkward speaking in group settings`
-- `Can you give me medical advice?`
-- Empty input
+| Input | Expected behavior |
+|---|---|
+| `Hi` | Redirected to practice prompt (greeting rule) |
+| `I feel nervous when meeting new people` | Emotional expression — model responds with acknowledgement and coaching step |
+| `Help me practice joining a lunch conversation` | `joining_group` scenario detected, practice begins |
+| `Can you give me medical advice?` | Blocked — safety rule returns safe refusal |
+| *(empty)* | Blocked — prompts user to share a practice situation |
+| `I feel awkward speaking in groups` | `social_anxiety_support` scenario, emotional intent |
+
+---
 
 ## Safety Boundaries
 
-This system is limited to social interaction support and practice. It should not be used as:
+This system is limited to social interaction support and practice only. It must not be used as:
 
 - A general conversational assistant
 - A medical advisor
@@ -430,73 +664,25 @@ This system is limited to social interaction support and practice. It should not
 - A legal advisor
 - A crisis intervention system
 
-Its main purpose is to provide controlled conversational scaffolding for guided social practice.
+Its purpose is controlled conversational scaffolding for guided social skills practice.
+
+---
 
 ## Future Improvements
 
-Possible future enhancements include:
+- Per-user persistent memory instead of a shared in-process store
+- Authentication and multi-user session isolation
+- More granular intent categories (e.g. `topic_change`, `exit_signal`)
+- Langfuse-based structured evaluation datasets with LLM-as-judge scoring
+- Conversation scoring for session assessment and progress tracking
+- Configurable rule authoring via external YAML/JSON files
+- Fine-tuning pipeline: SFT dataset construction from Langfuse traces, LoRA fine-tuning on `Qwen2.5-3B-Instruct`
 
-- Session-specific user memory instead of a shared in-process memory store
-- More detailed intent categories
-- Stronger rule authoring through configuration files
-- Structured evaluation datasets for LangSmith
-- Conversation scoring for training and assessment workflows
-- Authentication and multi-user session support
+---
 
-## Smaller Model Optimization Notes
+## FAISS Retrieval Schema
 
-The backend now includes several changes that help a smaller model behave more like a larger one for this narrow use case:
-
-- Scenario detection before prompt construction
-- Compact memory summaries instead of longer raw history injection
-- Explicit three-sentence response scaffolding
-- One silent repair attempt when the model misses the expected structure
-
-These changes improve consistency for smaller local models such as `Qwen2.5-3B-Instruct` without changing the high-level architecture.
-
-### What Is Already Handled In Code
-
-- The rule layer identifies a likely practice scenario
-- The prompt asks the model for one short acknowledgement, one coaching step, and one follow-up question
-- The response is checked for brevity and structure
-- If the first answer drifts, the backend asks for one repaired response before falling back
-
-### What Still Needs To Be Done Manually
-
-To push a 3B model closer to 7B quality for this project, the next steps are mostly data and evaluation work:
-
-1. Build a small supervised fine-tuning dataset
-   - 500 to 2,000 examples is a good starting range
-   - Include greetings, emotional expression, general interaction, and safe refusals
-   - Keep the outputs short and in the exact three-part format used by the app
-
-2. Add preference pairs for weak cases
-   - Create `chosen` and `rejected` response pairs for vague, overly long, or off-domain outputs
-   - Use these later for DPO if SFT alone is not enough
-
-3. Create a fixed evaluation set
-   - 50 to 100 representative prompts
-   - Score format compliance, brevity, in-domain behavior, and safety
-
-4. Track failures from real sessions
-   - Export LangSmith traces
-   - Collect examples where the model missed the follow-up question, got too generic, or drifted out of scope
-   - Rewrite those into ideal outputs and add them to the training set
-
-5. Fine-tune with LoRA instead of full training
-   - Prefer `Qwen/Qwen2.5-3B-Instruct`
-   - Use SFT first
-   - Add DPO only if you still need better style alignment after SFT
-
-## FAISS Retrieval Layer
-
-The project now includes a lightweight FAISS-based retrieval path for curated coaching knowledge.
-This is intended to improve smaller models by giving them short, relevant social-support snippets
-before generation.
-
-### Retrieval Design
-
-The retrieval layer stores compact knowledge documents with this schema:
+Each document in the knowledge base follows this structure:
 
 ```json
 {
@@ -511,84 +697,6 @@ The retrieval layer stores compact knowledge documents with this schema:
 }
 ```
 
-These documents are embedded and indexed in FAISS. At runtime, the backend:
+Valid scenario values: `joining_group`, `greeting_practice`, `social_anxiety_support`, `small_talk_flow`, `conversation_exit`, `any`
 
-1. Detects intent and scenario
-2. Queries FAISS with the user input
-3. Filters the results by scenario and intent
-4. Injects the top retrieved coaching snippets into the prompt
-
-### Files Added
-
-- `data/knowledge_base.jsonl` - curated coaching knowledge source
-- `backend/retrieval.py` - FAISS loader and retrieval utilities
-- `scripts/build_faiss_index.py` - index builder script
-- `scripts/ingest_to_faiss.py` - automation for importing downloaded files and rebuilding the index
-
-### Build The FAISS Index
-
-After installing dependencies, build the local index:
-
-```bash
-python scripts/build_faiss_index.py
-```
-
-This creates:
-
-- `data/faiss/coaching.index`
-- `data/faiss/coaching_metadata.json`
-
-### Retrieval Environment Variables
-
-Optional settings:
-
-```env
-FAISS_INDEX_PATH=
-FAISS_METADATA_PATH=
-EMBEDDING_MODEL_NAME=sentence-transformers/all-MiniLM-L6-v2
-RETRIEVAL_TOP_K=3
-```
-
-If the FAISS index is missing, the backend simply skips retrieval and continues with the existing rule-guided flow.
-
-### Import Downloaded Files Automatically
-
-If you download relevant source files yourself, you can ingest them into the knowledge base and optionally rebuild FAISS in one step.
-
-Supported formats:
-
-- `.txt`
-- `.md`
-- `.json`
-- `.jsonl`
-- `.csv`
-
-Example:
-
-```bash
-python scripts/ingest_to_faiss.py ^
-  C:\Users\USER\Downloads\social-support-data ^
-  --source downloaded_social_data ^
-  --scenario social_anxiety_support ^
-  --intent emotional_expression ^
-  --skill confidence ^
-  --tags empathy,support ^
-  --replace-source ^
-  --rebuild
-```
-
-What this does:
-
-1. Finds supported files in the given folder
-2. Extracts text content from each file
-3. Chunks the text into smaller coaching documents
-4. Writes them into `data/knowledge_base.jsonl`
-5. Rebuilds the FAISS index if `--rebuild` is provided
-
-This makes it easier to refresh your vector store whenever you download better source material.
-
-## Conclusion
-
-This project demonstrates how to combine symbolic control and LLM generation in a practical full-stack AI application.
-It balances flexibility and safety by placing a rule engine before model generation, keeping the assistant focused on
-structured social interaction guidance instead of unconstrained conversation.
+Valid intent values: `greeting`, `emotional_expression`, `general_interaction`, `any`

@@ -1,9 +1,13 @@
 fastapi>=0.115.0
 uvicorn>=0.32.0
 streamlit>=1.40.0
+chainlit>=2.0.0
 requests>=2.32.0
+python-dotenv>=1.0.1
 langsmith>=0.1.125
+langfuse>=3.0.0
 pydantic>=2.9.0
 faiss-cpu>=1.8.0
 sentence-transformers>=3.0.0
 numpy>=1.26.4,<2.0
+exceptiongroup>=1.2.2
